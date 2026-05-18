@@ -1,6 +1,7 @@
 import webview
 import os
 import sys
+import webbrowser
 from fractions import Fraction
 from typing import Optional
 from core.models import LinearProblem
@@ -89,8 +90,8 @@ class Api:
             import traceback
             return {"error": str(e) + "\n" + traceback.format_exc()}
 
-    def save_html(self, detailed=False, hidden_steps=None):
-        """Сохраняет решение как самодостаточный HTML-файл для печати/PDF."""
+    def save_html(self, hidden_steps=None):
+        """Сохраняет решение как самодостаточный HTML-файл и открывает в браузере для печати/PDF."""
         if not self.last_problem or not self.last_steps:
             return {"error": "Нет решенной задачи"}
 
@@ -102,7 +103,7 @@ class Api:
 
             content_html = Exporter.generate_html(
                 self.last_problem, self.last_steps, self.last_final_answer,
-                detailed=detailed, hidden_steps=hidden_steps,
+                detailed=False, hidden_steps=hidden_steps,
                 x_original=x_original,
                 n_orig_vars=solver.n_orig_vars if solver else None,
             )
@@ -157,6 +158,7 @@ class Api:
                     file_path = file_path[0]
                 with open(str(file_path), 'w', encoding='utf-8') as f:
                     f.write(full_html)
+                webbrowser.open(f"file:///{str(file_path).replace(os.sep, '/')}")
                 return {"success": True}
             return {"success": False, "reason": "cancelled"}
         except Exception as e:

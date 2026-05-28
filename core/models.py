@@ -1,9 +1,45 @@
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 from fractions import Fraction
 
 # Тип границы переменной: None означает отсутствие ограничения (±∞)
 Bound = Optional[Fraction]
+
+# Тип канонического столбца. См. CanonicalVar.
+CanonicalVarKind = Literal[
+    'orig',         # столбец исходной переменной x_j (≥ 0, возможно после сдвига)
+    'slack',        # балансовая переменная s_i (для ограничения <=)
+    'surplus',      # избыточная переменная s_i (для ограничения >=)
+    'artificial',   # искусственная переменная a_k (для = или >=)
+    'split+',       # положительная часть свободной переменной x_j^+
+    'split-',       # отрицательная часть свободной переменной x_j^-
+]
+
+
+@dataclass
+class CanonicalVar:
+    """Метаданные одного столбца расширенной канонической задачи Ax = b, x ≥ 0.
+
+    Используется в [`Exporter`](core/exporter.py) для:
+        - вывода блока «Каноническая форма» с осмысленными именами s_i, a_k и т.п.;
+        - таблицы соответствия «индекс в расширенной задаче ↔ обозначение ↔ тип»;
+        - подстановки display_label в подписи базиса каждого шага.
+
+    Attributes:
+        kind: тип столбца (см. :data:`CanonicalVarKind`).
+        ext_index: 0-based позиция столбца в расширенной матрице A.
+        constraint_row: для slack/surplus/artificial — 0-based номер исходной
+            строки, к которой привязана добавленная переменная; иначе None.
+        orig_index: для orig/split± — 0-based номер исходной переменной; иначе None.
+        display_label: LaTeX-метка для рендеринга (без обрамляющих ``$``).
+            Примеры: ``"x_{1}"``, ``"s_{2}"``, ``"a_{1}"``, ``"x_{1}^{+}"``.
+    """
+
+    kind: CanonicalVarKind
+    ext_index: int
+    display_label: str
+    constraint_row: Optional[int] = None
+    orig_index: Optional[int] = None
 
 @dataclass
 class LinearProblem:
@@ -69,3 +105,11 @@ class SimplexStep:
     # Список ошибок валидации восстановленного решения (пустой/None = ОК).
     # Заполняется только на финальном (оптимальном) шаге фазы II.
     validation_errors: Optional[List[str]] = None
+    # Исходная базисная матрица (m x m) — столбцы расширенной A с индексами из N
+    # в порядке N. Заполняется солвером для возможности её отдельного рендеринга
+    # перед обратной матрицей. См. дефект D4 в FIX_PLAN.md.
+    B_orig: Optional[List[List[Fraction]]] = None
+    # Направление оптимизации ИСХОДНОЙ задачи (True = max). Нужно для управления
+    # выводом приоритетного u^* на финальном шаге (D5). Внутри солвера всё всегда
+    # сводится к max, и u_0 относится к этой max-форме.
+    is_max_problem_original: Optional[bool] = None

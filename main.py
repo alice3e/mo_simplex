@@ -83,6 +83,11 @@ class Api:
                 detailed=detailed,
                 x_original=x_original,
                 n_orig_vars=solver.n_orig_vars,
+                canonical_vars=solver.canonical_vars,
+                canonical_A=solver.A,
+                canonical_b=solver.b,
+                canonical_signs_after_norm=solver.signs,
+                artificial_indices=list(solver.artificial),
             )
             return html_output
 
@@ -106,6 +111,11 @@ class Api:
                 detailed=False, hidden_steps=hidden_steps,
                 x_original=x_original,
                 n_orig_vars=solver.n_orig_vars if solver else None,
+                canonical_vars=solver.canonical_vars if solver else None,
+                canonical_A=solver.A if solver else None,
+                canonical_b=solver.b if solver else None,
+                canonical_signs_after_norm=solver.signs if solver else None,
+                artificial_indices=list(solver.artificial) if solver else None,
             )
 
             # Читаем CSS для встраивания
@@ -179,6 +189,11 @@ class Api:
                 detailed=detailed, hidden_steps=hidden_steps,
                 x_original=x_original,
                 n_orig_vars=solver.n_orig_vars if solver else None,
+                canonical_vars=solver.canonical_vars if solver else None,
+                canonical_A=solver.A if solver else None,
+                canonical_b=solver.b if solver else None,
+                canonical_signs_after_norm=solver.signs if solver else None,
+                artificial_indices=list(solver.artificial) if solver else None,
             )
 
             window = webview.windows[0]

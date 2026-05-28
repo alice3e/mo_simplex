@@ -6,7 +6,7 @@
 
 from typing import List, Generator, Optional, Tuple
 from fractions import Fraction
-from core.models import LinearProblem, SimplexStep, Bound
+from core.models import Bound, CanonicalVar, LinearProblem, SimplexStep
 
 
 class SimplexSolver:
@@ -51,6 +51,16 @@ class SimplexSolver:
         #        'split-' — отрицательная часть (парная к split+).
         self._var_map: List[Tuple[str, int, Fraction]] = []
 
+        # Метаданные расширенных канонических переменных. Заполняется параллельно
+        # с _var_map (в _apply_variable_reductions) и в _build_artificial_basis /
+        # _build_canonical_basis. Используется Exporter'ом для блока «Каноническая
+        # форма» и подписей базиса.
+        self.canonical_vars: List[CanonicalVar] = []
+
+        # Счётчик уже добавленных искусственных переменных (для нумерации
+        # display_label='a_{k}'). Инкрементируется при каждом appended artificial.
+        self._artificial_counter: int = 0
+
         # Флаги инверсии строк (True = строка была умножена на -1 при b_i < 0)
         self._row_inverted: List[bool] = [False] * self.n_constraints
 
@@ -68,6 +78,11 @@ class SimplexSolver:
         """
         # --- Шаг 1. Редукции переменных ---
         self._apply_variable_reductions()
+
+        # Регистрируем canonical_vars для всех ИСХОДНЫХ переменных
+        # (orig / split+ / split-). slack/surplus/artificial добавляются позже,
+        # в _build_artificial_basis / _build_canonical_basis.
+        self._populate_canonical_vars_for_originals()
 
         # --- Шаг 2. Нормализация b >= 0 ---
         for i in range(self.n_constraints):
@@ -175,6 +190,52 @@ class SimplexSolver:
             self._var_map.append(('direct', orig_j, Fraction(0)))
             ext_j += 1
 
+    def _populate_canonical_vars_for_originals(self) -> None:
+        """Заполняет :attr:`canonical_vars` записями для исходных переменных
+        (тип ``orig`` / ``split+`` / ``split-``).
+
+        Инвариант: фиксированные переменные (тип ``fixed`` в ``_var_map``) НЕ
+        отображаются в ``canonical_vars`` — их столбец удалён из ``A``.
+        Остальные записи ``_var_map`` идут в том же порядке, что и столбцы в ``A``,
+        поэтому ``ext_index`` назначается монотонно.
+        """
+        ext_j = 0
+        for kind_in_map, orig_j, _shift in self._var_map:
+            if kind_in_map == 'fixed':
+                continue
+            if kind_in_map == 'split+':
+                cv_kind = 'split+'
+                label = f"x_{{{orig_j + 1}}}^{{+}}"
+            elif kind_in_map == 'split-':
+                cv_kind = 'split-'
+                label = f"x_{{{orig_j + 1}}}^{{-}}"
+            else:
+                # 'direct', 'neg_shift' (и потенциальный 'neg') — для пользователя
+                # это исходная переменная x_j (тонкости редукции — внутреннее дело).
+                cv_kind = 'orig'
+                label = f"x_{{{orig_j + 1}}}"
+            self.canonical_vars.append(
+                CanonicalVar(
+                    kind=cv_kind,
+                    ext_index=ext_j,
+                    display_label=label,
+                    orig_index=orig_j,
+                )
+            )
+            ext_j += 1
+
+    def _current_B_orig(self) -> List[List[Fraction]]:
+        """Возвращает текущую ИСХОДНУЮ базисную матрицу B_orig (m × m): столбцы
+        расширенной матрицы A с индексами из self.N в порядке self.N.
+
+        Это та матрица, обращение которой даёт текущий ``B_inv``. Используется
+        Exporter'ом для отдельного рендеринга перед обратной матрицей (см. D4).
+        """
+        return [
+            [self.A[i][idx] for idx in self.N]
+            for i in range(self.n_constraints)
+        ]
+
     def _remove_column(self, ext_j: int) -> None:
         """Удаляет столбец ext_j из ``A``, а также соответствующие записи в
         ``c``, ``lower_bounds`` и ``upper_bounds``. Уменьшает ``n_vars``.
@@ -214,6 +275,42 @@ class SimplexSolver:
         self._row_inverted.append(False)
         self.n_constraints += 1
 
+    # ------------------------------------------------------- canonical_vars helpers
+    def _register_canonical_var(
+        self,
+        kind: str,
+        constraint_row: int,
+        label: Optional[str] = None,
+    ) -> None:
+        """Регистрирует новую запись CanonicalVar для добавленной переменной
+        (slack / surplus / artificial). Должно вызываться сразу после
+        :meth:`_append_var`, чтобы ``ext_index = self.n_vars - 1``.
+
+        Если ``label`` не задан, имя выбирается автоматически:
+            slack    → s_{constraint_row+1}
+            surplus  → s_{constraint_row+1}
+            artificial → a_{self._artificial_counter + 1}
+        """
+        ext_index = self.n_vars - 1
+        if label is None:
+            if kind == 'artificial':
+                self._artificial_counter += 1
+                label = f"a_{{{self._artificial_counter}}}"
+            else:
+                label = f"s_{{{constraint_row + 1}}}"
+        elif kind == 'artificial':
+            # Если метку задал caller, всё равно увеличиваем счётчик, чтобы
+            # последующие auto-метки не дублировали номер.
+            self._artificial_counter += 1
+        self.canonical_vars.append(
+            CanonicalVar(
+                kind=kind,  # type: ignore[arg-type]
+                ext_index=ext_index,
+                display_label=label,
+                constraint_row=constraint_row,
+            )
+        )
+
     def _build_artificial_basis(self) -> None:
         """Строит начальный базис с балансовыми/искусственными переменными."""
         self.N = [-1] * self.n_constraints
@@ -221,14 +318,19 @@ class SimplexSolver:
             sign = self.signs[i]
             if sign == '<=':
                 self._append_var(coeff_row=i, coeff=Fraction(1), c_value=Fraction(0))
+                self._register_canonical_var('slack', i)
                 self.N[i] = self.n_vars - 1
             elif sign == '>=':
+                # Сначала избыточная (surplus, коэффициент -1), затем искусственная.
                 self._append_var(coeff_row=i, coeff=Fraction(-1), c_value=Fraction(0))
+                self._register_canonical_var('surplus', i)
                 self._append_var(coeff_row=i, coeff=Fraction(1), c_value=Fraction(0))
+                self._register_canonical_var('artificial', i)
                 self.artificial.append(self.n_vars - 1)
                 self.N[i] = self.n_vars - 1
             elif sign == '=':
                 self._append_var(coeff_row=i, coeff=Fraction(1), c_value=Fraction(0))
+                self._register_canonical_var('artificial', i)
                 self.artificial.append(self.n_vars - 1)
                 self.N[i] = self.n_vars - 1
             else:
@@ -266,6 +368,7 @@ class SimplexSolver:
         for i in range(m):
             if self.N[i] == -1:
                 self._append_var(coeff_row=i, coeff=Fraction(1), c_value=Fraction(0))
+                self._register_canonical_var('artificial', i)
                 self.artificial.append(self.n_vars - 1)
                 self.N[i] = self.n_vars - 1
 
@@ -321,6 +424,8 @@ class SimplexSolver:
                     description="Задача несовместна: на фазе I минимум суммы искусственных переменных строго положителен.",
                     artificial_indices=list(self.artificial),
                     row_inverted=list(self._row_inverted),
+                    B_orig=self._current_B_orig(),
+                    is_max_problem_original=self.problem.is_max,
                 )
                 return
 
@@ -409,6 +514,8 @@ class SimplexSolver:
                     u_0_original=u_0_original,
                     row_inverted=list(self._row_inverted),
                     validation_errors=validation_errors,
+                    B_orig=self._current_B_orig(),
+                    is_max_problem_original=self.problem.is_max,
                 )
                 return ('optimal', B_inv)
 
@@ -435,6 +542,8 @@ class SimplexSolver:
                     artificial_indices=list(self.artificial),
                     u_0_original=u_0_original,
                     row_inverted=list(self._row_inverted),
+                    B_orig=self._current_B_orig(),
+                    is_max_problem_original=self.problem.is_max,
                 )
                 return ('unbounded', B_inv)
 
@@ -479,6 +588,8 @@ class SimplexSolver:
                 artificial_indices=list(self.artificial),
                 u_0_original=u_0_original,
                 row_inverted=list(self._row_inverted),
+                B_orig=self._current_B_orig(),
+                is_max_problem_original=self.problem.is_max,
             )
 
             # --- pivot ---

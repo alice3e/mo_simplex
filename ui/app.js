@@ -364,6 +364,7 @@ async function saveHtml() {
 
 async function saveMarkdown() {
     const hiddenSteps = Array.from(document.querySelectorAll('.step-visibility-toggle:not(:checked)')).map(el => parseInt(el.dataset.step));
+    const detailed = document.getElementById('detailed-mode') ? document.getElementById('detailed-mode').checked : false;
 
     try {
         const result = await pywebview.api.save_markdown(detailed, hiddenSteps);
